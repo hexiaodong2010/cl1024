@@ -46,8 +46,8 @@ var (
 	jobsRw           sync.RWMutex
 	jsonFile         = "./jobs.json"
 	saveJobsJsonOnce = &sync.Once{}
-
-	jobPool = &JobPoolChannel{
+	watchChan        = make(chan bool)
+	jobPool          = &JobPoolChannel{
 		C:        make(chan *urlJob, 2),
 		once:     sync.Once{},
 		IsClosed: false,
@@ -60,6 +60,43 @@ type JobPoolChannel struct {
 	IsClosed bool
 }
 
+func init() {
+	//图片区链接
+	//"https://cb.bbcb.xyz/thread0806.php?fid=16"
+	//内容页面
+	//htm_data/1109/16/594741.html <h3><a href="htm_data/2006/16/3967138.html" target="_blank" id="">[原创] [手势认证] 精厕小狐狸露出系列⑥，露脸。 [20P]</a></h3>
+	flag.StringVar(&host, "host", "https://cb.bbcb.xyz/thread0806.php?fid=16", "***/thread0806.php?fid=16&search=&page=1")
+	flag.StringVar(&dir, "dir", "./data", "image data dir eg:./data c:/data")
+	flag.StringVar(&httpProxy, "httpProxy", "", "httpProxy eg:http://127.0.0.1:8080")
+	flag.IntVar(&page, "page", 1, "page in url query page")
+	flag.BoolVar(&download, "d", true, "download switch , switch on,download image else collect image urls")
+	flag.Parse()
+}
+func runJob(job *urlJob) {
+	if len(job.Images) < 1 {
+		job.Images = getImageListsByUrl(job.Url)
+	}
+
+	defer func() {
+		atomic.AddUint32(&finishedNum, 1)
+		watchChan <- true
+		<-pipeLimit
+	}()
+	if job.Finished {
+		return
+	}
+	if download == false {
+		return
+	}
+	log.Println("开始执行下载：", job.Title)
+	for _, imgUrl := range job.Images {
+		time.Sleep(500 * time.Millisecond)
+		downloadImage(imgUrl, job)
+	}
+	jobsRw.Lock()
+	defer jobsRw.Unlock()
+	jobs[job.Url].Finished = true
+}
 func main() {
 	defer func() {
 		if err := recover(); err != nil {
@@ -71,68 +108,26 @@ func main() {
 			ioutil.WriteFile(jsonFile, bys, os.ModePerm)
 			log.Println("end main process")
 		})
-		//log.Println()(jobs)
 	}()
-	//图片区链接
-	//"https://cb.bbcb.xyz/thread0806.php?fid=16"
-	//内容页面
-	//htm_data/1109/16/594741.html <h3><a href="htm_data/2006/16/3967138.html" target="_blank" id="">[原创] [手势认证] 精厕小狐狸露出系列⑥，露脸。 [20P]</a></h3>
-	flag.StringVar(&host, "host", "https://cb.bbcb.xyz/thread0806.php?fid=16", "***/thread0806.php?fid=16&search=&page=1")
-	flag.StringVar(&dir, "dir", "./data", "image data dir eg:./data c:/data")
-	flag.StringVar(&httpProxy, "httpProxy", "", "httpProxy eg:http://127.0.0.1:8080")
-	flag.IntVar(&page, "page", 1, "page in url query page")
-	flag.BoolVar(&download, "d", true, "download switch , switch on,download image else collect image urls")
-	flag.Parse()
 	hostObject, err = url.Parse(host)
-	watchChan := make(chan bool)
+	done := make(chan bool)
 	go func() {
 		for {
 			select {
+			case <-done:
+				return
+			case job := <-jobPool.C:
+				runJob(job)
 			case <-watchChan:
 				watching()
+			default:
+				time.Sleep(500 * time.Microsecond)
 			}
 		}
 	}()
 	loadJobsFromJson()
-	go func() {
-		for {
-			if job, ok := <-jobPool.C; ok {
-				pipeLimit <- true
-				go func(job *urlJob) {
-					if len(job.Images) < 1 {
-						job.Images = getImageListsByUrl(job.Url)
-					}
-
-					defer func() {
-						atomic.AddUint32(&finishedNum, 1)
-						watchChan <- true
-						<-pipeLimit
-					}()
-					if job.Finished {
-						return
-					}
-					if download == false {
-						return
-					}
-					log.Println("开始执行下载：", job.Title)
-					for _, imgUrl := range job.Images {
-						downloadImage(imgUrl, job)
-					}
-					jobsRw.Lock()
-					defer jobsRw.Unlock()
-					jobs[job.Url].Finished = true
-				}(job)
-			} else {
-				log.Println("程序执行完毕")
-				break
-			}
-		}
-	}()
-	newQuery := hostObject.Query()
-	newQuery.Set("search", "")
-	newQuery.Set("page", strconv.Itoa(page))
-	hostObject.RawQuery = newQuery.Encode()
-	getListPageUrls(hostObject.String())
+	getListPageUrls()
+	done <- true
 }
 func getImageListsByUrl(url string) []string {
 	log.Println("获取图片下载链接 start ", url)
@@ -163,14 +158,19 @@ func doRequest(urlStr string) string {
 	}
 	resp, _ := client.Get(urlStr)
 	if resp.StatusCode != http.StatusOK {
-		log.Fatal("http request error,errorCode" + strconv.Itoa(resp.StatusCode))
+		log.Println("http request error,errorCode" + strconv.Itoa(resp.StatusCode))
+		return ""
 	}
 	body, _ := ioutil.ReadAll(transform.NewReader(resp.Body, simplifiedchinese.GBK.NewDecoder()))
 	return string(body)
 }
-func getListPageUrls(url string) {
+func getListPageUrls() {
+	newQuery := hostObject.Query()
+	newQuery.Set("search", "")
+	newQuery.Set("page", strconv.Itoa(page))
+	hostObject.RawQuery = newQuery.Encode()
 	log.Println("获取列表信息 start")
-	listBodyString := doRequest(url)
+	listBodyString := doRequest(hostObject.String())
 
 	regList, _ := regexp.Compile(`<a href="htm_data/(.*?).html" target="_blank" id="">(.*?)</a>`)
 	lists := regList.FindAllStringSubmatch(listBodyString, -1)
@@ -199,6 +199,7 @@ func getListPageUrls(url string) {
 	}
 
 	for _, job := range jobs {
+		time.Sleep(1 * time.Second)
 		jobPool.C <- job
 	}
 }
@@ -224,7 +225,8 @@ func trimHtml(src string) string {
 func downloadImage(testImg string, job *urlJob) {
 	reg := regexp.MustCompile(`(\w|\d|_)*.(jp\w{1,2}|png|gif)`)
 	log.Println("开始处理图片：", job.Title, testImg)
-	name := fmt.Sprintf(`%s/%s_%s`, dir, job.Title, reg.FindStringSubmatch(strings.ToLower(testImg))[0])
+	_ = os.Mkdir(fmt.Sprintf(`%s/%s`,dir,job.Title), os.ModePerm)
+	name := fmt.Sprintf(`%s/%s/%s`, dir, job.Title, reg.FindStringSubmatch(strings.ToLower(testImg))[0])
 	fileInfo, err := os.Stat(name)
 	if err == nil && fileInfo.Size() > 0 {
 		log.Println("文件已经存在")
