@@ -35,6 +35,7 @@ type urlJob struct {
 var (
 	finishedNum      = uint32(0)
 	host             string
+	httpProxy        string
 	download         bool
 	dir              string
 	page             int
@@ -78,6 +79,7 @@ func main() {
 	//htm_data/1109/16/594741.html <h3><a href="htm_data/2006/16/3967138.html" target="_blank" id="">[原创] [手势认证] 精厕小狐狸露出系列⑥，露脸。 [20P]</a></h3>
 	flag.StringVar(&host, "host", "https://cb.bbcb.xyz/thread0806.php?fid=16", "***/thread0806.php?fid=16&search=&page=1")
 	flag.StringVar(&dir, "dir", "./data", "image data dir eg:./data c:/data")
+	flag.StringVar(&httpProxy, "httpProxy", "", "httpProxy eg:http://127.0.0.1:8080")
 	flag.IntVar(&page, "page", 1, "page in url query page")
 	flag.BoolVar(&download, "d", true, "download switch , switch on,download image else collect image urls")
 	flag.Parse()
@@ -147,9 +149,19 @@ func getImageListsByUrl(url string) []string {
 	log.Println("获取图片下载链接 end")
 	return res
 }
-func doRequest(url string) string {
+func doRequest(urlStr string) string {
 	time.Sleep(3 * time.Second)
-	resp, _ := http.Get(url)
+	client := http.DefaultClient
+	if len(httpProxy) > 0 {
+		proxyURL, _ := url.Parse(httpProxy)
+		trans := &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		}
+		client = &http.Client{
+			Transport: trans,
+		}
+	}
+	resp, _ := client.Get(urlStr)
 	if resp.StatusCode != http.StatusOK {
 		log.Fatal("http request error,errorCode" + strconv.Itoa(resp.StatusCode))
 	}
