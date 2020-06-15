@@ -224,6 +224,7 @@ func trimHtml(src string) string {
 func downloadImage(testImg string, job *urlJob) {
 	reg := regexp.MustCompile(`(\w|\d|_)*.(jp\w{1,2}|png|gif)`)
 	log.Println("开始处理图片：", job.Title, testImg)
+	_ = os.Mkdir(fmt.Sprintf(`%s/%s`,dir,job.Title), os.ModePerm)
 	name := fmt.Sprintf(`%s/%s_%s`, dir, job.Title, reg.FindStringSubmatch(strings.ToLower(testImg))[0])
 	fileInfo, err := os.Stat(name)
 	if err == nil && fileInfo.Size() > 0 {
